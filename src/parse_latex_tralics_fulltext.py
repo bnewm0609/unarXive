@@ -151,7 +151,6 @@ def _filename_to_aid(fn, details=False):
 
 def _get_paper_metadata(meta_db_cur, aid, ppr_year, ppr_month):
     """Retrieve metadata from the given DB cursor."""
-    # breakpoint()
     meta_db_cur.execute(
         """
         select json from paper where year=? and month=? and aid=?
@@ -532,7 +531,6 @@ def parse(
                 contained_arXiv_ids_list = []
                 contained_links_list = []
 
-                # breakpoint()
                 for xref in containing_p.findall("xref"):
                     link = xref.get("url")
                     link_text_raw = etree.tostring(
@@ -628,7 +626,6 @@ def parse(
                         )
                     )
                     num_citations_notfound += 1
-                # breakpoint()
                 if cit.tail:
                     cit.tail = replace_text + cit.tail
                 else:
@@ -702,7 +699,6 @@ def parse(
             # _write_debug_xml(tree)
             # Replace table reference in text
             for rtag in tree.xpath('//ref[starts-with(@target, "uid")]'):
-                breakpoint()
                 # FIXME: should resolve section refs here
                 uid = rtag.get("target")
                 ref_type, ref_uuid = ref_map.get(uid, (None, None))

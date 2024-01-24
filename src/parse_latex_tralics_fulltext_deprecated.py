@@ -329,7 +329,6 @@ def parse(
 
             for xtag in ftags + ttags + fltags:
                 uid = xtag.get("id")
-                # breakpoint()
                 if xtag.tag in ['figure', 'table']:
                     treat_as_type = xtag.tag
                 else:
@@ -431,9 +430,7 @@ def parse(
                 if len(mn.getchildren()) == 0:
                     mn.getparent().remove(mn)
             # replace non citation references with REF
-            # breakpoint()
             for rtag in tree.xpath('//ref[starts-with(@target, "uid")]'):
-                breakpoint()
                 # FIXME: should resolve section refs here
                 uid = rtag.get("target")
                 ref_type, ref_uuid = ref_map.get(uid, (None, None))
