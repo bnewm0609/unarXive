@@ -1,6 +1,5 @@
 """ Normalize and parse.
 """
-
 import os
 import shutil
 import sys
@@ -9,9 +8,11 @@ import tempfile
 import time
 from normalize_arxiv_dump import normalize
 from parse_latex_tralics import parse
+from parse_latex_tralics_fulltext import parse as parse_fulltext
+# from parse_latex_tralics_fulltext_no_ft import parse as parse_fulltext
 
 
-def prepare(in_dir, out_dir, meta_db, tar_fn_patt, write_logs=False):
+def prepare(in_dir, out_dir, meta_db, tar_fn_patt, write_logs=False, should_parse_fulltext=True):
     if not os.path.isdir(in_dir):
         print("input directory does not exist")
         return False
@@ -118,15 +119,27 @@ def prepare(in_dir, out_dir, meta_db, tar_fn_patt, write_logs=False):
             source_file_info = normalize(
                 tmp_dir_gz, tmp_dir_norm, write_logs=write_logs
             )
-            parse(
-                tmp_dir_norm,
-                out_dir,
-                tar_fn,
-                source_file_info,
-                meta_db,
-                incremental=False,
-                write_logs=write_logs,
-            )
+            
+            if should_parse_fulltext:
+                parse_fulltext(
+                    tmp_dir_norm,
+                    out_dir,
+                    tar_fn,
+                    source_file_info,
+                    meta_db,
+                    incremental=False,
+                    write_logs=write_logs,
+                )
+            else:
+                parse(
+                    tmp_dir_norm,
+                    out_dir,
+                    tar_fn,
+                    source_file_info,
+                    meta_db,
+                    incremental=False,
+                    write_logs=write_logs,
+                )
         with open(done_log_path, "a") as f:
             f.write("{}\n".format(tar_fn))
     print("{} files".format(num_files_total))
@@ -138,15 +151,22 @@ if __name__ == "__main__":
         print(
             (
                 "usage: python3 prepare.py </path/to/in/dir> </path/to/out/dir> "
-                "</path/to/metadata.db> [<tar_fn_patt>]"
+                "</path/to/metadata.db> [--parse_fulltext]"
             )
         )
         sys.exit()
     in_dir = sys.argv[1]
     out_dir_dir = sys.argv[2]
     meta_db = sys.argv[3]
-    if len(sys.argv) == 5:
-        tar_fn_patt = sys.argv[4]
+    tar_fn_patt = ".tar"
+    if len(sys.argv) == 5 and sys.argv[4] == "--parse_fulltext":
+        print("Parsing fulltext!")
+        should_parse_fulltext = True
     else:
-        tar_fn_patt = ".tar"
-    ret = prepare(in_dir, out_dir_dir, meta_db, tar_fn_patt, write_logs=True)
+        print("Not parsing full text. Add `--parse_fulltext` to parse full text")
+        should_parse_fulltext = False
+    # if len(sys.argv) == 5:
+    #     tar_fn_patt = sys.argv[4]
+    # else:
+    #     tar_fn_patt = ".tar"
+    ret = prepare(in_dir, out_dir_dir, meta_db, tar_fn_patt, write_logs=True, should_parse_fulltext=should_parse_fulltext)
