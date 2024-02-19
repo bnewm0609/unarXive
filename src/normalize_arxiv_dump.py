@@ -19,6 +19,7 @@ import sys
 import tarfile
 import tempfile
 from hashlib import sha1
+from tqdm import tqdm
 
 
 MAIN_TEX_PATT = re.compile(r"(\\begin\s*\{\s*document\s*\})", re.I)
@@ -135,11 +136,13 @@ def normalize(in_dir, out_dir, write_logs=True):
     source_file_info = dict()
 
     # breakpoint()
-    for fn in os.listdir(in_dir):
+    fns = os.listdir(in_dir)
+    for fn in tqdm(fns, total=len(fns), unit="papers"):
         path = os.path.join(in_dir, fn)
         aid_fn_safe, ext = os.path.splitext(fn)
 
         # Ben: sometimes the extension is not ".gz" (this happens bc there's no extension on the .tar.gz files downloaded from aws)
+        # so, we add it here (assuming that all of these files are actually gz files)
         if ext != ".gz":
             aid_fn_safe = aid_fn_safe + ext
             ext = ".gz"

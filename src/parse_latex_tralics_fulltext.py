@@ -759,6 +759,7 @@ def parse(
     # persist output in JSONL
     tar_fn_base, ext = os.path.splitext(tar_fn)
     out_json_path = os.path.join(out_dir, "{}.jsonl".format(tar_fn_base))
+    print("Saving json to:", out_json_path)
     with open(out_json_path, "w") as f:
         for ppr in paper_dicts_list:
             line = "{}\n".format(json.dumps(ppr))
