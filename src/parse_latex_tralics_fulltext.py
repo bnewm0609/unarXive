@@ -216,8 +216,72 @@ def _get_paper_metadata(meta_db_cur, aid, ppr_year, ppr_month):
 #     return table_rep
 
 
+def run_tralics(
+    in_path, aid_fn_safe, aid, out_dir, write_logs=True, log=lambda x: None
+):
+
+    # write latex contents to the given outfile file
+    # with tempfile.TemporaryDirectory() as tmp_dir_path:
+    xml_path = os.path.join(out_dir, "{}.xml".format(aid_fn_safe))
+
+    if not os.path.isfile(xml_path):
+        # run tralics
+        tralics_args = [
+            "tralics",
+            "-silent",
+            "-noxmlerror",
+            "-utf8",
+            "-oe8",
+            "-entnames=false",
+            "-nomathml",
+            "-output_dir={}".format(out_dir),
+            in_path,
+        ]
+
+        if write_logs:
+            out = open(os.path.join(out_dir, "log_tralics.txt"), "a")
+        else:
+            out = open(os.devnull, "w")
+        err = open(os.path.join(out_dir, "tralics_out.txt"), mode="w")
+        out.write("\n------------- {} -------------\n".format(aid))
+        out.flush()
+
+        try:
+            subprocess.run(tralics_args, stdout=out, stderr=err, timeout=5)
+        except subprocess.TimeoutExpired as e:
+            # print('FAILED {}. skipping'.format(aid))
+            log("\n--- {} ---\n{}\n----------\n".format(aid, e))
+            return None
+        out.close()
+        err.close()
+    # get plain text from tralics output
+    parser = etree.XMLParser()
+
+    # check if smth went wrong with parsing latex to temporary xml file
+    if not os.path.isfile(xml_path):
+        # print('FAILED {}. skipping'.format(aid))
+        log(("\n--- {} ---\n{}\n----------\n" "").format(aid, "no tralics output"))
+        return None
+    with open(xml_path) as f:
+        try:
+            tree = etree.parse(f, parser)  # get tree of XML hierarchy
+        # catch exception to faulty XML file
+        except (etree.XMLSyntaxError, UnicodeDecodeError) as e:
+            # print('FAILED {}. skipping'.format(aid))
+            log("\n--- {} ---\n{}\n----------\n".format(aid, e))
+            return None
+    return tree
+
+
 def parse(
-    in_dir, out_dir, tar_fn, source_file_info, meta_db_fp, incremental, write_logs=True
+    in_dir,
+    out_dir,
+    tar_fn,
+    source_file_info,
+    meta_db_fp,
+    incremental,
+    write_logs=True,
+    tralics_dir=None,
 ):
     def log(msg):
         if write_logs:
@@ -252,491 +316,442 @@ def parse(
             log("skipping file {} (PDF)".format(fn))
             continue
         # write latex contents in a temporary xml file
-        with tempfile.TemporaryDirectory() as tmp_dir_path:
-            tmp_xml_path = os.path.join(tmp_dir_path, "{}.xml".format(aid_fn_safe))
-            # run tralics
-            tralics_args = [
-                "tralics",
-                "-silent",
-                "-noxmlerror",
-                "-utf8",
-                "-oe8",
-                "-entnames=false",
-                "-nomathml",
-                "-output_dir={}".format(tmp_dir_path),
-                path,
-            ]
-
-            if write_logs:
-                out = open(os.path.join(out_dir, "log_tralics.txt"), "a")
-            else:
-                out = open(os.devnull, "w")
-            err = open(os.path.join(tmp_dir_path, "tralics_out.txt"), mode="w")
-            out.write("\n------------- {} -------------\n".format(aid))
-            out.flush()
-
-            try:
-                subprocess.run(tralics_args, stdout=out, stderr=err, timeout=5)
-            except subprocess.TimeoutExpired as e:
-                # print('FAILED {}. skipping'.format(aid))
-                log("\n--- {} ---\n{}\n----------\n".format(aid, e))
-                continue
-            out.close()
-            err.close()
-
-            # get plain text from tralics output
-            parser = etree.XMLParser()
-
-            # check if smth went wrong with parsing latex to temporary xml file
-            if not os.path.isfile(tmp_xml_path):
-                # print('FAILED {}. skipping'.format(aid))
-                log(
-                    ("\n--- {} ---\n{}\n----------\n" "").format(
-                        aid, "no tralics output"
-                    )
+        if tralics_dir is None:
+            with tempfile.TemporaryDirectory() as tmp_dir_path:
+                tree = run_tralics(
+                    path, aid_fn_safe, aid, tmp_dir_path, write_logs, log
                 )
-                continue
-            with open(tmp_xml_path) as f:
-                try:
-                    tree = etree.parse(f, parser)  # get tree of XML hierarchy
-                    file_iterator += 1
-                # catch exception to faulty XML file
-                except (etree.XMLSyntaxError, UnicodeDecodeError) as e:
-                    # print('FAILED {}. skipping'.format(aid))
-                    log("\n--- {} ---\n{}\n----------\n".format(aid, e))
+                if tree is None:
                     continue
+        else:
+            os.makedirs(tralics_dir, exist_ok=True)
+            tree = run_tralics(path, aid_fn_safe, aid, tralics_dir, write_logs, log)
+            if tree is None:
+                continue
 
-            # start building paper dict
-            paper_dict = OrderedDict(
-                {
-                    "paper_id": aid,
-                    "_pdf_hash": None,
-                    "_source_hash": None,
-                    "_source_name": None,
-                    "metadata": None,
-                    "abstract": [],
-                    # "body_text": [],
-                    # "bib_entries": {},
-                    "ref_entries": {},
-                    "tables": {},
-                }
-            )
-
-            paper_dict["_source_hash"] = source_file_info[aid_fn_safe]["hash"]
-            paper_dict["_source_name"] = source_file_info[aid_fn_safe]["name"]
-
-            # get paper metadata
-            metadata = _get_paper_metadata(meta_db_cur, aid, ppr_year, ppr_month)
-            paper_dict["metadata"] = metadata
-            abstract_text = metadata.get("abstract", "")
-            abstract = {
-                "section": "Abstract",
-                "text": abstract_text,
-                "cite_spans": [],
-                "ref_spans": [],
+        file_iterator += 1
+        # start building paper dict
+        paper_dict = OrderedDict(
+            {
+                "paper_id": aid,
+                "_pdf_hash": None,
+                "_source_hash": None,
+                "_source_name": None,
+                "metadata": None,
+                "abstract": [],
+                "body_text": [],
+                "bib_entries": {},
+                "ref_entries": {},
+                "tables": {},
             }
-            paper_dict["abstract"] = abstract
-            ref_map = {}
-            # parse XML
+        )
 
-            # tags things that could be treated specially
-            # - <Metadata>
-            #     - <title>
-            #     - <authors><author>
-            # - <head>
-            # - <proof>
-            # - <abstract>
-            # - <maketitle>
-            # - <list> (might be used for larger chunks of text like
-            #           related work)
-            #
-            # tags *NOT* to touch
-            # - <unknown>: can surround whole content
+        paper_dict["_source_hash"] = source_file_info[aid_fn_safe]["hash"]
+        paper_dict["_source_name"] = source_file_info[aid_fn_safe]["name"]
 
-            # figures and tables
-            # # come in the follwoing forms:
-            # # - <figure/table><head>caption text ...
-            # # - <figure/table><caption>caption text ...
-            # # - <float type="figure/table"><caption>caption text ...
+        # get paper metadata
+        metadata = _get_paper_metadata(meta_db_cur, aid, ppr_year, ppr_month)
+        paper_dict["metadata"] = metadata
+        abstract_text = metadata.get("abstract", "")
+        abstract = {
+            "section": "Abstract",
+            "text": abstract_text,
+            "cite_spans": [],
+            "ref_spans": [],
+        }
+        paper_dict["abstract"] = abstract
+        ref_map = {}
+        # parse XML
 
-            # # # Ben: Start table section
-            # ftags = tree.xpath("//{}".format("figure"))
-            # ttags = tree.xpath("//{}".format("table"))
-            # fltags = tree.xpath("//{}".format("float"))
+        # tags things that could be treated specially
+        # - <Metadata>
+        #     - <title>
+        #     - <authors><author>
+        # - <head>
+        # - <proof>
+        # - <abstract>
+        # - <maketitle>
+        # - <list> (might be used for larger chunks of text like
+        #           related work)
+        #
+        # tags *NOT* to touch
+        # - <unknown>: can surround whole content
 
-            # paper_dict["ref_entries"] = {}
+        # figures and tables
+        # # come in the follwoing forms:
+        # # - <figure/table><head>caption text ...
+        # # - <figure/table><caption>caption text ...
+        # # - <float type="figure/table"><caption>caption text ...
 
-            # for xtag in ftags + ttags + fltags:
-            #     if xtag.tag in ["figure", "table"]:
-            #         treat_as_type = xtag.tag
-            #     else:
-            #         assert xtag.tag == "float"
-            #         if xtag.get("type") in ["figure", "table"]:
-            #             treat_as_type = xtag.get("type")
-            #         else:
-            #             continue
-            #     elem_uuid = uuid.uuid4()  # create uuid for each fig/tbl
+        # # # Ben: Start table section
+        # ftags = tree.xpath("//{}".format("figure"))
+        # ttags = tree.xpath("//{}".format("table"))
+        # fltags = tree.xpath("//{}".format("float"))
 
-            #     # if treat_as_type == "table":
-            #     #     breakpoint()
-            #     caption_text = ""
-            #     table_xml = ""
-            #     # table_content = None
-            #     try:
-            #         for element in xtag.iter():
-            #             if element.tag in ["head", "caption"]:
-            #                 elem_text = etree.tostring(
-            #                     element,
-            #                     encoding="unicode",
-            #                     method="text",
-            #                     with_tail=False,
-            #                 )
-            #                 if len(elem_text) > 0:
-            #                     caption_text = elem_text
-            #             elif element.tag == "table" and not table_xml:
-            #                 # table_content = _extract_table(element)
-            #                 table_xml = etree.tostring(
-            #                     element,
-            #                     encoding="unicode",
-            #                     with_tail=False,
-            #                 )
-            #     except TypeError:
-            #         # can get a "NoneType cannot be serialized" in rare
-            #         # cases
-            #         continue
-            #     if len(caption_text) < 1:
-            #         caption_text = "NO_CAPTION"
+        # paper_dict["ref_entries"] = {}
 
-            #     xtag.tail = "{{{{{}:{}}}}}".format(treat_as_type, elem_uuid)
+        # for xtag in ftags + ttags + fltags:
+        #     if xtag.tag in ["figure", "table"]:
+        #         treat_as_type = xtag.tag
+        #     else:
+        #         assert xtag.tag == "float"
+        #         if xtag.get("type") in ["figure", "table"]:
+        #             treat_as_type = xtag.get("type")
+        #         else:
+        #             continue
+        #     elem_uuid = uuid.uuid4()  # create uuid for each fig/tbl
 
-            #     if treat_as_type == "table":
-            #         paper_dict["tables"][str(elem_uuid)] = {
-            #             "table": table_xml,
-            #             "caption": "".join(caption_text.splitlines()),
-            #             "type": "table",
-            #         }
-            # # # Ben: End table section
+        #     # if treat_as_type == "table":
+        #     #     breakpoint()
+        #     caption_text = ""
+        #     table_xml = ""
+        #     # table_content = None
+        #     try:
+        #         for element in xtag.iter():
+        #             if element.tag in ["head", "caption"]:
+        #                 elem_text = etree.tostring(
+        #                     element,
+        #                     encoding="unicode",
+        #                     method="text",
+        #                     with_tail=False,
+        #                 )
+        #                 if len(elem_text) > 0:
+        #                     caption_text = elem_text
+        #             elif element.tag == "table" and not table_xml:
+        #                 # table_content = _extract_table(element)
+        #                 table_xml = etree.tostring(
+        #                     element,
+        #                     encoding="unicode",
+        #                     with_tail=False,
+        #                 )
+        #     except TypeError:
+        #         # can get a "NoneType cannot be serialized" in rare
+        #         # cases
+        #         continue
+        #     if len(caption_text) < 1:
+        #         caption_text = "NO_CAPTION"
 
-            # if treat_as_type == "figure":
-            #     paper_dict["ref_entries"][str(elem_uuid)] = {
-            #         "caption": "".join(caption_text.splitlines()),
-            #         "type": "figure",
-            #     }
+        #     xtag.tail = "{{{{{}:{}}}}}".format(treat_as_type, elem_uuid)
 
-            # elif treat_as_type == "table":
-            #     paper_dict["ref_entries"][str(elem_uuid)] = {
-            #         "caption": "".join(caption_text.splitlines()),
-            #         "type": "table",
-            #     }
+        #     if treat_as_type == "table":
+        #         paper_dict["tables"][str(elem_uuid)] = {
+        #             "table": table_xml,
+        #             "caption": "".join(caption_text.splitlines()),
+        #             "type": "table",
+        #         }
+        # # # Ben: End table section
 
-            # remove all figure/table/float tags from xml file
-            ## START COMMENT OUT EVERYTHING HERE
-            # etree.strip_elements(tree, 'figure', with_tail=False)
-            # etree.strip_elements(tree, 'table', with_tail=False)
-            # etree.strip_elements(tree, 'float', with_tail=False)
+        # if treat_as_type == "figure":
+        #     paper_dict["ref_entries"][str(elem_uuid)] = {
+        #         "caption": "".join(caption_text.splitlines()),
+        #         "type": "figure",
+        #     }
 
-            # math notation
-            for ftag in tree.xpath("//{}".format("formula")):
-                # uuid
-                formula_uuid = uuid.uuid4()
+        # elif treat_as_type == "table":
+        #     paper_dict["ref_entries"][str(elem_uuid)] = {
+        #         "caption": "".join(caption_text.splitlines()),
+        #         "type": "table",
+        #     }
+
+        # remove all figure/table/float tags from xml file
+        ## START COMMENT OUT EVERYTHING HERE
+        # etree.strip_elements(tree, 'figure', with_tail=False)
+        # etree.strip_elements(tree, 'table', with_tail=False)
+        # etree.strip_elements(tree, 'float', with_tail=False)
+
+        # math notation
+        for ftag in tree.xpath("//{}".format("formula")):
+            # uuid
+            formula_uuid = uuid.uuid4()
+            try:
+                latex_content = etree.tostring(
+                    ftag.find("texmath"),
+                    encoding="unicode",
+                    method="text",
+                    with_tail=False,
+                )
+            except TypeError:
+                # very rare case where Tralics creates an XML that uses
+                # Texmath tags instead of texmath
+                # kown for:
+                # - 1308.0481
+                # - 1901.06986
                 try:
                     latex_content = etree.tostring(
-                        ftag.find("texmath"),
+                        ftag.find("Texmath"),
                         encoding="unicode",
                         method="text",
                         with_tail=False,
                     )
-                except TypeError:
-                    # very rare case where Tralics creates an XML that uses
-                    # Texmath tags instead of texmath
-                    # kown for:
-                    # - 1308.0481
-                    # - 1901.06986
-                    try:
-                        latex_content = etree.tostring(
-                            ftag.find("Texmath"),
+                except:
+                    latex_content = "NO_LATEX_CONTENT"
+            if ftag.tail:
+                new_tail = " {}".format(ftag.tail)
+            else:
+                new_tail = ""
+            ftag.tail = "{{{{formula:{}}}}}{}".format(formula_uuid, new_tail)
+
+            paper_dict["ref_entries"][str(formula_uuid)] = {
+                "latex": "".join(latex_content.splitlines()),
+                "type": "formula",
+            }
+
+        # remove all formula tags from XML file
+        etree.strip_elements(tree, "formula", with_tail=False)
+
+        # remove title and authors (works only in a few papers)
+        attributes = ["title", "author", "date", "thanks"]  # keywords
+        for attribute in attributes:
+            etree.strip_elements(tree, attribute, with_tail=False)
+        # remove what is most likely noise
+        mby_noise = tree.xpath("//unexpected")
+        for mn in mby_noise:
+            if len(mn.getchildren()) == 0:
+                mn.getparent().remove(mn)
+        # # replace non citation references with REF
+        # for rtag in tree.xpath('//ref[starts-with(@target, "uid")]'):
+        #     # FIXME: should resolve section refs here
+        #     if rtag.tail:
+        #         rtag.tail = "{} {}".format("REF", rtag.tail)
+        #     else:
+        #         rtag.tail = " {}".format("REF")
+
+        # processing of citation markers
+        bibitems = tree.xpath("//bibitem")
+        bibkey_map = {}
+
+        paper_dict["bib_entries"] = {}
+
+        for bi in bibitems:
+            containing_p = bi.getparent()
+            try:
+                while containing_p.tag != "p":
+                    # sometimes the bibitem element
+                    # is not the direct child of
+                    # the containing p item we want
+                    containing_p = containing_p.getparent()
+            except AttributeError:
+                # getparent() might return None
+                continue
+            for child in containing_p.getchildren():
+                if child.text:
+                    child.text = "{}".format(child.text)
+            text = etree.tostring(containing_p, encoding="unicode", method="text")
+
+            text = re.sub(r"\s+", " ", text).strip()
+            # NOTE: commented out lines below b/c it removes information
+            # # replace the uuid of formulas in reference string
+            # text = re.sub(r'(^{{formula:)(.*)', '', text)
+            sha_hash = sha1()
+            items = [text.encode("utf-8"), str(aid).encode("utf-8")]
+            for item in items:
+                sha_hash.update(item)
+            sha_hash_string = str(sha_hash.hexdigest())
+            local_key = bi.get("id")
+            bibkey_map[local_key] = sha_hash_string
+
+            paper_dict["bib_entries"][sha_hash_string] = {"bib_entry_raw": text}
+
+            contained_arXiv_ids_list = []
+            contained_links_list = []
+
+            for xref in containing_p.findall("xref"):
+                link = xref.get("url")
+                link_text_raw = etree.tostring(xref, encoding="unicode", method="text")
+                # clean link plain text for matching with
+                # bib entry plain text
+                link_text = re.sub(r"\s+", " ", link_text_raw).strip()
+
+                aurl_match = ARXIV_URL_PATT.search(link)
+                if aurl_match:
+                    id_part = aurl_match.group(1)
+                    if len(link_text) != 0:
+                        try:
+                            location_offset_start = text.index(link_text)
+                            location_offset_end = text.index(link_text) + len(link_text)
+                        except ValueError as e:
+                            # treat error if link text is not in
+                            # bib entry text
+                            location_offset_start = None
+                            location_offset_end = None
+
+                    else:
+                        # if there are links included in source file
+                        # without corresponding visible text
+                        link_text = None
+                        location_offset_start = None
+                        location_offset_end = None
+
+                    arXiv_item_local_temp_dict = {
+                        "id": id_part,
+                        "text": link_text,
+                        "start": location_offset_start,
+                        "end": location_offset_end,
+                    }
+                    contained_arXiv_ids_list.append(arXiv_item_local_temp_dict)
+
+                else:
+                    if len(link_text) != 0:
+                        try:
+                            location_offset_start = text.index(link_text)
+                            location_offset_end = text.index(link_text) + len(link_text)
+                        except ValueError as e:
+                            location_offset_start = None
+                            location_offset_end = None
+
+                    else:
+                        link_text = None
+                        location_offset_start = None
+                        location_offset_end = None
+
+                    link_item_local_temp_dict = {
+                        "url": link,
+                        "text": link_text,
+                        "start": location_offset_start,
+                        "end": location_offset_end,
+                    }
+                    contained_links_list.append(link_item_local_temp_dict)
+
+            paper_dict["bib_entries"][sha_hash_string][
+                "contained_arXiv_ids"
+            ] = contained_arXiv_ids_list
+            paper_dict["bib_entries"][sha_hash_string][
+                "contained_links"
+            ] = contained_links_list
+
+        citations = tree.xpath("//cit")
+        for cit in citations:
+            num_citations += 1
+            elem = cit.find("ref")
+            if elem is None:
+                log(
+                    ("WARNING: cite element in {} contains no ref element" "").format(
+                        aid
+                    )
+                )
+                continue
+            ref = elem.get("target")
+            replace_text = ""
+            if ref in bibkey_map:
+                marker = "{{{{cite:{}}}}}".format(bibkey_map[ref][:7])
+                # Ben: added this to make it easier to extract citations from tables
+                cit.attrib["sha"] = bibkey_map[ref]
+                replace_text += marker
+            else:
+                log(
+                    ("WARNING: unmatched bibliography key {} for doc {}" "").format(
+                        ref, aid
+                    )
+                )
+                num_citations_notfound += 1
+            if cit.tail:
+                cit.tail = replace_text + cit.tail
+            else:
+                cit.tail = replace_text
+
+        ### Ben: I think we want to keep these elements in the tree, so leet's not remove them
+        # # /processing of citation markers
+        # etree.strip_elements(tree, "Bibliography", with_tail=False)
+        # etree.strip_elements(tree, "bibitem", with_tail=False)
+        # etree.strip_elements(tree, "cit", with_tail=False)
+
+        ftags = tree.xpath("//{}".format("figure"))
+        ttags = tree.xpath("//{}".format("table"))
+        fltags = tree.xpath("//{}".format("float"))
+
+        paper_dict["ref_entries"] = {}
+
+        for xtag in ftags + ttags + fltags:
+            uid = xtag.get("id")
+            if xtag.tag in ["figure", "table"]:
+                treat_as_type = xtag.tag
+            else:
+                assert xtag.tag == "float"
+                if xtag.get("type") in ["figure", "table"]:
+                    treat_as_type = xtag.get("type")
+                else:
+                    continue
+            elem_uuid = uuid.uuid4()  # create uuid for each fig/tbl
+
+            # if treat_as_type == "table":
+            #     breakpoint()
+            caption_text = ""
+            table_xml = ""
+            # table_content = None
+            try:
+                for element in xtag.iter():
+                    if element.tag in ["head", "caption"]:
+                        elem_text = etree.tostring(
+                            element,
                             encoding="unicode",
                             method="text",
                             with_tail=False,
                         )
-                    except:
-                        latex_content = "NO_LATEX_CONTENT"
-                if ftag.tail:
-                    new_tail = " {}".format(ftag.tail)
-                else:
-                    new_tail = ""
-                ftag.tail = "{{{{formula:{}}}}}{}".format(formula_uuid, new_tail)
+                        if len(elem_text) > 0:
+                            caption_text = elem_text
+                    elif element.tag == "table" and not table_xml:
+                        # table_content = _extract_table(element)
+                        table_xml = etree.tostring(
+                            element,
+                            encoding="unicode",
+                            with_tail=False,
+                        )
+            except TypeError:
+                # can get a "NoneType cannot be serialized" in rare
+                # cases
+                continue
+            if len(caption_text) < 1:
+                caption_text = "NO_CAPTION"
 
-                paper_dict["ref_entries"][str(formula_uuid)] = {
-                    "latex": "".join(latex_content.splitlines()),
-                    "type": "formula",
+            xtag.tail = "{{{{{}:{}}}}}".format(treat_as_type, elem_uuid)
+
+            if uid is not None:
+                ref_map[uid] = (treat_as_type, elem_uuid)
+            if treat_as_type == "table":
+                paper_dict["tables"][str(elem_uuid)] = {
+                    "table": table_xml,
+                    "caption": "".join(caption_text.splitlines()),
+                    "type": "table",
                 }
 
-            # remove all formula tags from XML file
-            etree.strip_elements(tree, "formula", with_tail=False)
+        # _write_debug_xml(tree)
+        # Replace table reference in text
+        for rtag in tree.xpath('//ref[starts-with(@target, "uid")]'):
+            # FIXME: should resolve section refs here
+            uid = rtag.get("target")
+            ref_type, ref_uuid = ref_map.get(uid, (None, None))
+            if ref_type is not None:
+                marker = "{{{{{}:{}}}}}".format(ref_type, ref_uuid)
+            else:
+                marker = "REF"
+            if rtag.tail:
+                rtag.tail = "{} {}".format(marker, rtag.tail)
+            else:
+                rtag.tail = " {}".format(marker)
 
-            # remove title and authors (works only in a few papers)
-            attributes = ["title", "author", "date", "thanks"]  # keywords
-            for attribute in attributes:
-                etree.strip_elements(tree, attribute, with_tail=False)
-            # remove what is most likely noise
-            mby_noise = tree.xpath("//unexpected")
-            for mn in mby_noise:
-                if len(mn.getchildren()) == 0:
-                    mn.getparent().remove(mn)
-            # # replace non citation references with REF
-            # for rtag in tree.xpath('//ref[starts-with(@target, "uid")]'):
-            #     # FIXME: should resolve section refs here
-            #     if rtag.tail:
-            #         rtag.tail = "{} {}".format("REF", rtag.tail)
-            #     else:
-            #         rtag.tail = " {}".format("REF")
+        # process document structure
+        paragraphs = []
+        curr_sec = {"head": "", "num": "-1", "type": ""}
+        # div0 tag can appear on different levels of the XML hierarchy,
+        # such as /std/div0 or /unknown/frontmatter/div0
+        # we therefore take div0s from anywhere and assume they always
+        # are the lowest level containers of the main textual contents
+        top_level_sections = tree.xpath("//div0")
+        if len(top_level_sections) == 0:
+            # if there are no div0 tags, we give up on sections and just
+            # use paragraphs, lists, proofs, and listings and hope we
+            # cover all content with those
+            paragraphs = [
+                _process_content_node(p, curr_sec)
+                for p in tree.xpath(
+                    ("//*[self::p or self::list or self::proof or " "self::listing]")
+                )
+            ]
+        for sec in top_level_sections:
+            paragraphs.extend(_process_section_node(sec, curr_sec))
 
-            # processing of citation markers
-            bibitems = tree.xpath("//bibitem")
-            bibkey_map = {}
-
-            paper_dict["bib_entries"] = {}
-
-            for bi in bibitems:
-                containing_p = bi.getparent()
-                try:
-                    while containing_p.tag != "p":
-                        # sometimes the bibitem element
-                        # is not the direct child of
-                        # the containing p item we want
-                        containing_p = containing_p.getparent()
-                except AttributeError:
-                    # getparent() might return None
-                    continue
-                for child in containing_p.getchildren():
-                    if child.text:
-                        child.text = "{}".format(child.text)
-                text = etree.tostring(containing_p, encoding="unicode", method="text")
-
-                text = re.sub(r"\s+", " ", text).strip()
-                # NOTE: commented out lines below b/c it removes information
-                # # replace the uuid of formulas in reference string
-                # text = re.sub(r'(^{{formula:)(.*)', '', text)
-                sha_hash = sha1()
-                items = [text.encode("utf-8"), str(aid).encode("utf-8")]
-                for item in items:
-                    sha_hash.update(item)
-                sha_hash_string = str(sha_hash.hexdigest())
-                local_key = bi.get("id")
-                bibkey_map[local_key] = sha_hash_string
-
-                paper_dict["bib_entries"][sha_hash_string] = {"bib_entry_raw": text}
-
-                contained_arXiv_ids_list = []
-                contained_links_list = []
-
-                for xref in containing_p.findall("xref"):
-                    link = xref.get("url")
-                    link_text_raw = etree.tostring(
-                        xref, encoding="unicode", method="text"
-                    )
-                    # clean link plain text for matching with
-                    # bib entry plain text
-                    link_text = re.sub(r"\s+", " ", link_text_raw).strip()
-
-                    aurl_match = ARXIV_URL_PATT.search(link)
-                    if aurl_match:
-                        id_part = aurl_match.group(1)
-                        if len(link_text) != 0:
-                            try:
-                                location_offset_start = text.index(link_text)
-                                location_offset_end = text.index(link_text) + len(
-                                    link_text
-                                )
-                            except ValueError as e:
-                                # treat error if link text is not in
-                                # bib entry text
-                                location_offset_start = None
-                                location_offset_end = None
-
-                        else:
-                            # if there are links included in source file
-                            # without corresponding visible text
-                            link_text = None
-                            location_offset_start = None
-                            location_offset_end = None
-
-                        arXiv_item_local_temp_dict = {
-                            "id": id_part,
-                            "text": link_text,
-                            "start": location_offset_start,
-                            "end": location_offset_end,
-                        }
-                        contained_arXiv_ids_list.append(arXiv_item_local_temp_dict)
-
-                    else:
-                        if len(link_text) != 0:
-                            try:
-                                location_offset_start = text.index(link_text)
-                                location_offset_end = text.index(link_text) + len(
-                                    link_text
-                                )
-                            except ValueError as e:
-                                location_offset_start = None
-                                location_offset_end = None
-
-                        else:
-                            link_text = None
-                            location_offset_start = None
-                            location_offset_end = None
-
-                        link_item_local_temp_dict = {
-                            "url": link,
-                            "text": link_text,
-                            "start": location_offset_start,
-                            "end": location_offset_end,
-                        }
-                        contained_links_list.append(link_item_local_temp_dict)
-
-                paper_dict["bib_entries"][sha_hash_string][
-                    "contained_arXiv_ids"
-                ] = contained_arXiv_ids_list
-                paper_dict["bib_entries"][sha_hash_string][
-                    "contained_links"
-                ] = contained_links_list
-
-            citations = tree.xpath("//cit")
-            for cit in citations:
-                num_citations += 1
-                elem = cit.find("ref")
-                if elem is None:
-                    log(
-                        (
-                            "WARNING: cite element in {} contains no ref element" ""
-                        ).format(aid)
-                    )
-                    continue
-                ref = elem.get("target")
-                replace_text = ""
-                if ref in bibkey_map:
-                    marker = "{{{{cite:{}}}}}".format(bibkey_map[ref][:7])
-                    # Ben: added this to make it easier to extract citations from tables
-                    cit.attrib["sha"] = bibkey_map[ref]
-                    replace_text += marker
-                else:
-                    log(
-                        ("WARNING: unmatched bibliography key {} for doc {}" "").format(
-                            ref, aid
-                        )
-                    )
-                    num_citations_notfound += 1
-                if cit.tail:
-                    cit.tail = replace_text + cit.tail
-                else:
-                    cit.tail = replace_text
-
-            ### Ben: I think we want to keep these elements in the tree, so leet's not remove them
-            # # /processing of citation markers
-            # etree.strip_elements(tree, "Bibliography", with_tail=False)
-            # etree.strip_elements(tree, "bibitem", with_tail=False)
-            # etree.strip_elements(tree, "cit", with_tail=False)
-
-            ftags = tree.xpath("//{}".format("figure"))
-            ttags = tree.xpath("//{}".format("table"))
-            fltags = tree.xpath("//{}".format("float"))
-
-            paper_dict["ref_entries"] = {}
-
-            for xtag in ftags + ttags + fltags:
-                uid = xtag.get("id")
-                if xtag.tag in ["figure", "table"]:
-                    treat_as_type = xtag.tag
-                else:
-                    assert xtag.tag == "float"
-                    if xtag.get("type") in ["figure", "table"]:
-                        treat_as_type = xtag.get("type")
-                    else:
-                        continue
-                elem_uuid = uuid.uuid4()  # create uuid for each fig/tbl
-
-                # if treat_as_type == "table":
-                #     breakpoint()
-                caption_text = ""
-                table_xml = ""
-                # table_content = None
-                try:
-                    for element in xtag.iter():
-                        if element.tag in ["head", "caption"]:
-                            elem_text = etree.tostring(
-                                element,
-                                encoding="unicode",
-                                method="text",
-                                with_tail=False,
-                            )
-                            if len(elem_text) > 0:
-                                caption_text = elem_text
-                        elif element.tag == "table" and not table_xml:
-                            # table_content = _extract_table(element)
-                            table_xml = etree.tostring(
-                                element,
-                                encoding="unicode",
-                                with_tail=False,
-                            )
-                except TypeError:
-                    # can get a "NoneType cannot be serialized" in rare
-                    # cases
-                    continue
-                if len(caption_text) < 1:
-                    caption_text = "NO_CAPTION"
-
-                xtag.tail = "{{{{{}:{}}}}}".format(treat_as_type, elem_uuid)
-                
-                if uid is not None:
-                    ref_map[uid] = (treat_as_type, elem_uuid)
-                if treat_as_type == "table":
-                    paper_dict["tables"][str(elem_uuid)] = {
-                        "table": table_xml,
-                        "caption": "".join(caption_text.splitlines()),
-                        "type": "table",
-                    }
-
-            # _write_debug_xml(tree)
-            # Replace table reference in text
-            for rtag in tree.xpath('//ref[starts-with(@target, "uid")]'):
-                # FIXME: should resolve section refs here
-                uid = rtag.get("target")
-                ref_type, ref_uuid = ref_map.get(uid, (None, None))
-                if ref_type is not None:
-                    marker = '{{{{{}:{}}}}}'.format(ref_type, ref_uuid)
-                else:
-                    marker = "REF"
-                if rtag.tail:
-                    rtag.tail = "{} {}".format(marker, rtag.tail)
-                else:
-                    rtag.tail = " {}".format(marker)
-
-            # process document structure
-            paragraphs = []
-            curr_sec = {"head": "", "num": "-1", "type": ""}
-            # div0 tag can appear on different levels of the XML hierarchy,
-            # such as /std/div0 or /unknown/frontmatter/div0
-            # we therefore take div0s from anywhere and assume they always
-            # are the lowest level containers of the main textual contents
-            top_level_sections = tree.xpath("//div0")
-            if len(top_level_sections) == 0:
-                # if there are no div0 tags, we give up on sections and just
-                # use paragraphs, lists, proofs, and listings and hope we
-                # cover all content with those
-                paragraphs = [
-                    _process_content_node(p, curr_sec)
-                    for p in tree.xpath(
-                        (
-                            "//*[self::p or self::list or self::proof or "
-                            "self::listing]"
-                        )
-                    )
-                ]
-            for sec in top_level_sections:
-                paragraphs.extend(_process_section_node(sec, curr_sec))
-
-            paper_dict["body_text"] = paragraphs
-            ## END COMMENT OUT EVERYTHING HERE
+        paper_dict["body_text"] = paragraphs
+        ## END COMMENT OUT EVERYTHING HERE
 
         # bundle paper dicts for presisting as JSONL (one JSON line per paper)
         paper_dicts_list.append(paper_dict)

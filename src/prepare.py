@@ -1,5 +1,7 @@
 """ Normalize and parse.
 """
+
+from argparse import ArgumentParser
 import os
 import shutil
 import sys
@@ -8,30 +10,49 @@ import tempfile
 import time
 from normalize_arxiv_dump import normalize
 from parse_latex_tralics import parse
+
+# from parse_latex_tralics_fulltext_deprecated import parse as parse_fulltext
 from parse_latex_tralics_fulltext import parse as parse_fulltext
-# from parse_latex_tralics_fulltext_no_ft import parse as parse_fulltext
 
 
-def prepare(in_dir, out_dir, meta_db, tar_fn_patt, write_logs=False, should_parse_fulltext=True):
-    if not os.path.isdir(in_dir):
-        print("input directory does not exist")
-        return False
-
-    ext_sample = [os.path.splitext(fn)[-1] for fn in os.listdir(in_dir)[:10]]
-    if ".tar" not in ext_sample:
-        print("input directory doesn't seem to contain TAR archives")
-        return False
-
+def prepare(
+    in_dir_or_file,
+    out_dir,
+    meta_db,
+    tar_fn_patt,
+    write_logs=False,
+    should_parse_fulltext=True,
+    tralics_dir=None,
+):
     if not os.path.isdir(out_dir):
         os.makedirs(out_dir)
     done_log_path = os.path.join(out_dir, "done.log")
-    done_tars = []
-    if os.path.isfile(done_log_path):
-        with open(done_log_path) as f:
-            lines = f.readlines()
-        done_tars = [l.strip() for l in lines]
 
-    tar_fns = [fn for fn in os.listdir(in_dir) if tar_fn_patt in fn]
+    if os.path.isdir(in_dir_or_file):
+        in_dir = in_dir_or_file
+        ext_sample = [os.path.splitext(fn)[-1] for fn in os.listdir(in_dir)[:10]]
+        if ".tar" not in ext_sample:
+            print("input directory doesn't seem to contain TAR archives")
+            return False
+
+        done_tars = []
+        if os.path.isfile(done_log_path):
+            with open(done_log_path) as f:
+                lines = f.readlines()
+            done_tars = [l.strip() for l in lines]
+
+        tar_fns = [fn for fn in os.listdir(in_dir) if tar_fn_patt in fn]
+    elif os.path.isfile(in_dir_or_file):
+        in_dir = os.path.dirname(in_dir_or_file)
+        if ".tar" != os.path.splitext(in_dir_or_file)[-1]:
+            print("input file must be a TAR archive")
+            return False
+        tar_fns = [os.path.basename(in_dir_or_file)]
+        done_tars = []
+    else:
+        if not os.path.isdir(in_dir_or_file):
+            print("input directory or file does not exist")
+            return False
     tar_total = len(tar_fns)
     num_pdf_total = 0
     num_files_total = 0
@@ -119,7 +140,7 @@ def prepare(in_dir, out_dir, meta_db, tar_fn_patt, write_logs=False, should_pars
             source_file_info = normalize(
                 tmp_dir_gz, tmp_dir_norm, write_logs=write_logs
             )
-            
+
             if should_parse_fulltext:
                 parse_fulltext(
                     tmp_dir_norm,
@@ -129,6 +150,7 @@ def prepare(in_dir, out_dir, meta_db, tar_fn_patt, write_logs=False, should_pars
                     meta_db,
                     incremental=False,
                     write_logs=write_logs,
+                    tralics_dir=tralics_dir,
                 )
             else:
                 parse(
@@ -147,19 +169,26 @@ def prepare(in_dir, out_dir, meta_db, tar_fn_patt, write_logs=False, should_pars
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in [4, 5]:
-        print(
-            (
-                "usage: python3 prepare.py </path/to/in/dir> </path/to/out/dir> "
-                "</path/to/metadata.db> [--parse_fulltext]"
-            )
-        )
-        sys.exit()
-    in_dir = sys.argv[1]
-    out_dir_dir = sys.argv[2]
-    meta_db = sys.argv[3]
+    argp = ArgumentParser()
+    argp.add_argument("in_dir_or_file", type=str)
+    argp.add_argument("out_dir", type=str)
+    argp.add_argument("metadata_db_path", type=str)
+    argp.add_argument("--parse_fulltext", action="store_true")
+    argp.add_argument("--tralics_dir", type=str)
+    args = argp.parse_args()
+    # if len(sys.argv) not in [4, 5]:
+    #     print(
+    #         (
+    #             "usage: python3 prepare.py </path/to/in/dir> </path/to/out/dir> "
+    #             "</path/to/metadata.db> [--parse_fulltext]"
+    #         )
+    #     )
+    #     sys.exit()
+    in_dir_or_file = args.in_dir_or_file
+    out_dir_dir = args.out_dir
+    meta_db = args.metadata_db_path
     tar_fn_patt = ".tar"
-    if len(sys.argv) == 5 and sys.argv[4] == "--parse_fulltext":
+    if args.parse_fulltext:
         print("Parsing fulltext!")
         should_parse_fulltext = True
     else:
@@ -169,4 +198,12 @@ if __name__ == "__main__":
     #     tar_fn_patt = sys.argv[4]
     # else:
     #     tar_fn_patt = ".tar"
-    ret = prepare(in_dir, out_dir_dir, meta_db, tar_fn_patt, write_logs=True, should_parse_fulltext=should_parse_fulltext)
+    ret = prepare(
+        in_dir_or_file,
+        out_dir_dir,
+        meta_db,
+        tar_fn_patt,
+        write_logs=True,
+        should_parse_fulltext=should_parse_fulltext,
+        tralics_dir=args.tralics_dir,
+    )
